@@ -94,8 +94,15 @@ def update_user(user_id):
     # Only allow users to update their own profile or admin
     current_user_id = g.current_user_id
     if current_user_id != user_id:
-        # Check if admin
-        if not g.get('is_admin', False):
+        # Check if admin by querying the DB
+        from app.models import UserRole, Role
+        admin_role = Role.query.filter_by(role_name='Admin').first()
+        is_admin = False
+        if admin_role:
+            is_admin = UserRole.query.filter_by(
+                user_id=current_user_id, role_id=admin_role.id
+            ).first() is not None
+        if not is_admin:
             return error_response("Not authorized to update this user", 403)
     
     # Update allowed fields
@@ -151,6 +158,19 @@ def delete_user(user_id):
     if not user:
         return not_found_response("User not found")
     
+    # Only the user themselves or an admin can deactivate
+    current_user_id = g.current_user_id
+    if current_user_id != user_id:
+        from app.models import UserRole, Role
+        admin_role = Role.query.filter_by(role_name='Admin').first()
+        is_admin = False
+        if admin_role:
+            is_admin = UserRole.query.filter_by(
+                user_id=current_user_id, role_id=admin_role.id
+            ).first() is not None
+        if not is_admin:
+            return error_response("Not authorized to deactivate this user", 403)
+    
     # Soft delete - deactivate instead of actual delete
     user.is_active = False
     
@@ -166,13 +186,11 @@ def delete_user(user_id):
 @token_required
 def get_user_roles(user_id):
     """Get user's roles."""
-    user = User.query.get(user_id)
-    
-    if not user:
-        return not_found_response("User not found")
-    
-    roles = [ur.role.to_dict() for ur in user.user_roles]
-    
+    from app.services.role_service import get_roles_for_user
+
+    roles, err = get_roles_for_user(user_id)
+    if err:
+        return not_found_response(err)
     return success_response(roles)
 
 
@@ -180,50 +198,37 @@ def get_user_roles(user_id):
 @token_required
 def assign_role(user_id):
     """Assign role to user."""
+    from app.services.role_service import assign_role_to_user
+
     data = request.get_json()
-    
     if not data or not data.get('role_id'):
-        return error_response("Role ID is required", 400)
-    
-    user = User.query.get(user_id)
-    if not user:
-        return not_found_response("User not found")
-    
-    role = Role.query.get(data['role_id'])
-    if not role:
-        return not_found_response("Role not found")
-    
-    # Check if already assigned
-    existing = UserRole.query.filter_by(user_id=user_id, role_id=data['role_id']).first()
-    if existing:
-        return error_response("Role already assigned to user", 400)
-    
+        return error_response("role_id is required", 400)
+
     try:
-        user_role = UserRole(user_id=user_id, role_id=data['role_id'])
-        db.session.add(user_role)
-        db.session.commit()
-        return success_response(message="Role assigned successfully")
-    except Exception as e:
-        db.session.rollback()
-        return error_response(f"Role assignment failed: {str(e)}", 500)
+        rid = int(data['role_id'])
+    except (TypeError, ValueError):
+        return error_response("role_id must be an integer", 400)
+
+    ok, err = assign_role_to_user(user_id, rid)
+    if not ok:
+        status = 404 if "not found" in err.lower() else 400
+        return error_response(err, status)
+
+    return success_response(message="Role assigned successfully")
 
 
 @user_bp.route('/<int:user_id>/roles/<int:role_id>', methods=['DELETE'])
 @token_required
 def remove_role(user_id, role_id):
     """Remove role from user."""
-    user_role = UserRole.query.filter_by(user_id=user_id, role_id=role_id).first()
-    
-    if not user_role:
-        return not_found_response("Role assignment not found")
-    
-    try:
-        db.session.delete(user_role)
-        db.session.commit()
-        return success_response(message="Role removed successfully")
-    except Exception as e:
-        db.session.rollback()
-        return error_response(f"Role removal failed: {str(e)}", 500)
+    from app.services.role_service import remove_role_from_user
+
+    ok, err = remove_role_from_user(user_id, role_id)
+    if not ok:
+        status = 404 if "not found" in err.lower() else 500
+        return error_response(err, status)
+
+    return success_response(message="Role removed successfully")
 
 
 @user_bp.route('/<int:user_id>/addresses', methods=['GET'])

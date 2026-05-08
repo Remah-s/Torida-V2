@@ -6,6 +6,7 @@ SQLAlchemy models for all database tables.
 from app.models.governorate import Governorate
 from app.models.user_type import UserType
 from app.models.role import Role
+from app.models.role_sequence import RoleSequence
 from app.models.permission import Permission
 from app.models.role_permission import RolePermission
 from app.models.code_sequence import CodeSequence
@@ -32,6 +33,7 @@ __all__ = [
     'Governorate',
     'UserType',
     'Role',
+    'RoleSequence',
     'Permission',
     'RolePermission',
     'CodeSequence',

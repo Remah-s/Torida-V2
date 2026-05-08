@@ -7,7 +7,7 @@ from flask import Blueprint, request
 from datetime import datetime
 
 from app.database import db
-from app.models import Payment, Order, User
+from app.models import Payment, Order, User, OrderStatusHistory
 from app.utils.response import (
     success_response, error_response, created_response,
     not_found_response, validation_error_response
@@ -126,6 +126,14 @@ def process_payment(payment_id):
         # Update order status if pending
         if order.status == 'pending':
             order.status = 'confirmed'
+            # Add status history for payment-driven status change
+            history = OrderStatusHistory(
+                order_id=order.id,
+                status='confirmed',
+                changed_by=g.current_user_id,
+                note='Auto-confirmed: payment received'
+            )
+            db.session.add(history)
         
         db.session.commit()
         
@@ -151,8 +159,11 @@ def refund_payment(payment_id):
     
     # Only seller or admin can refund
     user = User.query.get(g.current_user_id)
-    if order.seller_id != g.current_user_id:
-        return error_response("Not authorized", 403)
+    is_seller = order.seller_id == g.current_user_id
+    is_admin = user.has_role('Admin') if user else False
+    
+    if not is_seller and not is_admin:
+        return error_response("Only seller or admin can issue refunds", 403)
     
     if payment.status != 'paid':
         return error_response("Only paid payments can be refunded", 400)
@@ -160,6 +171,20 @@ def refund_payment(payment_id):
     try:
         payment.mark_refunded()
         order.status = 'refunded'
+        
+        # Restore stock on refund
+        for item in order.items:
+            if item.product:
+                item.product.increase_stock(item.quantity)
+        
+        # Add status history
+        history = OrderStatusHistory(
+            order_id=order.id,
+            status='refunded',
+            changed_by=g.current_user_id,
+            note='Order refunded via payment refund'
+        )
+        db.session.add(history)
         
         db.session.commit()
         

@@ -37,7 +37,8 @@ def success_response(
 def error_response(
     message: str = "An error occurred",
     status_code: int = 400,
-    errors: Optional[Dict[str, List[str]]] = None
+    errors: Optional[Dict[str, List[str]]] = None,
+    code: Optional[str] = None
 ) -> tuple:
     """
     Create a standardized error response.
@@ -46,14 +47,19 @@ def error_response(
         message: Error message
         status_code: HTTP status code
         errors: Optional validation errors dict
+        code: Optional machine-readable error code (e.g. "ROLE_NOT_FOUND")
         
     Returns:
         Tuple of (response, status_code)
     """
     response = {
         "success": False,
+        "error": message,
         "message": message
     }
+    
+    if code:
+        response["code"] = code
     
     if errors:
         response["errors"] = errors

@@ -189,6 +189,7 @@ The Torida Team
                 </div>
                 <div class="content">
                     <h2>Hello, {name}!</h2>
+
                     <p>Welcome to Torida, Egypt's premier B2B marketplace!</p>
                     <p>Your account has been successfully created. Here's what you can do:</p>
                     <div class="feature">📦 Browse products from verified suppliers</div>
@@ -197,7 +198,7 @@ The Torida Team
                     <div class="feature">💼 Manage your business profile</div>
                 </div>
                 <div class="footer">
-                    <p>© 2024 Torida. All rights reserved.</p>
+                    <p>© 2026 Torida. All rights reserved.</p>
                 </div>
             </div>
         </body>

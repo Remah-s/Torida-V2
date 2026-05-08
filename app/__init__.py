@@ -4,7 +4,7 @@ TORIDA Flask Application Factory
 B2B Marketplace Backend for Egypt.
 """
 import os
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 from app.config import config
@@ -40,7 +40,7 @@ def create_app(config_name=None):
     })
     
     # Initialize database
-    db.init_app(app)
+    init_db(app)
     
     # Register blueprints
     register_blueprints(app)
@@ -50,6 +50,9 @@ def create_app(config_name=None):
     
     # Register CLI commands
     register_commands(app)
+    
+    # Register security headers
+    register_security_headers(app)
     
     # Create upload folder if not exists
     upload_folder = app.config.get('UPLOAD_FOLDER', 'uploads')
@@ -114,6 +117,7 @@ def register_blueprints(app):
         category_bp, product_bp, cart_bp, wishlist_bp,
         order_bp, payment_bp, review_bp, notification_bp, address_bp
     )
+    from app.routes.admin_routes import admin_bp
     
     # Authentication routes
     app.register_blueprint(auth_bp)
@@ -154,6 +158,9 @@ def register_blueprints(app):
     
     # Address routes
     app.register_blueprint(address_bp)
+    
+    # Admin routes
+    app.register_blueprint(admin_bp)
 
 
 def register_error_handlers(app):
@@ -210,6 +217,13 @@ def register_error_handlers(app):
     
     @app.errorhandler(Exception)
     def handle_exception(error):
+        # Don't log HTTPException as unhandled
+        from werkzeug.exceptions import HTTPException
+        if isinstance(error, HTTPException):
+            return jsonify({
+                'success': False,
+                'message': error.description
+            }), error.code
         app.logger.error(f"Unhandled exception: {str(error)}")
         return jsonify({
             'success': False,
@@ -238,7 +252,7 @@ def register_commands(app):
     @app.cli.command('seed-db')
     def seed_db_command():
         """Seed the database with initial data."""
-        from app.models import Governorate, UserType, Role, Permission
+        from app.models import Governorate, UserType, Role, Permission, RoleSequence
         
         with app.app_context():
             # Seed governorates
@@ -276,6 +290,12 @@ def register_commands(app):
                     )
                     db.session.add(user_type)
             
+            # Seed role_sequences — upsert counter row (id=1)
+            seq_row = RoleSequence.query.get(1)
+            if not seq_row:
+                seq_row = RoleSequence(id=1, sequence=0)
+                db.session.add(seq_row)
+            
             # Seed roles
             roles = ['Admin', 'Manager', 'Editor', 'Viewer']
             for role_name in roles:
@@ -283,12 +303,13 @@ def register_commands(app):
                     role = Role(role_name=role_name)
                     db.session.add(role)
             
-            # Seed permissions
+            # Seed permissions (resource:action format)
             permissions = [
-                'create_users', 'edit_users', 'delete_users', 'view_users',
-                'create_products', 'edit_products', 'delete_products', 'view_products',
-                'create_orders', 'edit_orders', 'cancel_orders', 'view_orders',
-                'manage_roles', 'manage_permissions', 'view_reports', 'manage_settings'
+                'users:create', 'users:read', 'users:write', 'users:delete',
+                'products:create', 'products:read', 'products:write', 'products:delete',
+                'orders:create', 'orders:read', 'orders:write', 'orders:cancel',
+                'roles:manage', 'permissions:manage',
+                'reports:read', 'settings:manage'
             ]
             
             for perm_name in permissions:
@@ -298,3 +319,18 @@ def register_commands(app):
             
             db.session.commit()
             print('Database seeded with initial data.')
+
+
+def register_security_headers(app):
+    """Register security headers for all responses."""
+    
+    @app.after_request
+    def add_security_headers(response):
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+        response.headers['X-Frame-Options'] = 'DENY'
+        response.headers['X-XSS-Protection'] = '1; mode=block'
+        response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        return response
+

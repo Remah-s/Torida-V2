@@ -11,7 +11,8 @@ from app.utils.validators import (
 from app.utils.auth import (
     create_access_token, create_refresh_token, verify_token,
     hash_password, verify_password, get_current_user,
-    token_required, admin_required, seller_required, buyer_required
+    token_required, admin_required, seller_required, buyer_required,
+    permission_required
 )
 from app.utils.helpers import (
     generate_otp, generate_random_string, upload_file,
@@ -28,6 +29,7 @@ __all__ = [
     'create_access_token', 'create_refresh_token', 'verify_token',
     'hash_password', 'verify_password', 'get_current_user',
     'token_required', 'admin_required', 'seller_required', 'buyer_required',
+    'permission_required',
     # General helpers
     'generate_otp', 'generate_random_string', 'upload_file',
     'allowed_file', 'get_file_extension', 'sanitize_input'

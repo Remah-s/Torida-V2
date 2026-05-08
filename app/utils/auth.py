@@ -258,6 +258,40 @@ def buyer_required(f):
     return decorated
 
 
+def permission_required(permission_name):
+    """
+    Decorator factory that checks whether the current user holds a specific
+    permission through any of their assigned roles.
+
+    Usage:
+        @role_bp.route('/admin-settings', methods=['GET'])
+        @permission_required('settings:read')
+        def admin_settings():
+            ...
+
+    The decorator automatically applies @token_required so you do NOT need
+    to stack both decorators on the same view.
+    """
+    def decorator(f):
+        @wraps(f)
+        @token_required
+        def decorated(*args, **kwargs):
+            from app.services.role_service import user_has_permission
+
+            user_id = g.current_user_id
+
+            if not user_has_permission(user_id, permission_name):
+                return error_response(
+                    f"Permission '{permission_name}' is required",
+                    403,
+                    code="PERMISSION_DENIED"
+                )
+
+            return f(*args, **kwargs)
+        return decorated
+    return decorator
+
+
 def load_user_from_token():
     """
     Load the full user object from the token.
