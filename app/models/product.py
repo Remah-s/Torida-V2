@@ -90,6 +90,7 @@ class Product(db.Model):
     def get_average_rating(self):
         """Calculate average rating."""
         from sqlalchemy import func
+        from app.models.product_review import ProductReview
         result = db.session.query(func.avg(ProductReview.rating)).filter(
             ProductReview.product_id == self.id
         ).scalar()

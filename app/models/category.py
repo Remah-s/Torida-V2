@@ -22,7 +22,7 @@ class Category(db.Model):
     
     # Relationships
     products = db.relationship('Product', backref='category', lazy='dynamic')
-    product_sequence = db.relationship('ProductSequence', backref='category', uselist=False)
+    product_sequence = db.relationship('ProductSequence', backref='category', uselist=False, cascade='all, delete-orphan')
     
     def to_dict(self):
         """Convert category to dictionary."""

@@ -53,10 +53,6 @@ class Config:
         'max_overflow': 10,
         'pool_recycle': 1800,  # Recycle connections every 30 minutes
         'pool_pre_ping': True,  # Test connections before using them
-        'connect_args': {
-            'check_same_thread': False,
-            'timeout': 10
-        }
     }
     
     # JWT Settings
