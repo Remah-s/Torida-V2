@@ -10,7 +10,7 @@ import secrets
 import uuid
 from datetime import datetime
 from werkzeug.utils import secure_filename
-from flask import current_app
+from flask import current_app, has_request_context, request
 from typing import Optional, Tuple
 
 
@@ -123,6 +123,34 @@ def upload_file(file, subfolder: str = '') -> Tuple[bool, Optional[str]]:
     
     except Exception as e:
         return False, str(e)
+
+
+def build_public_url(path: str) -> str:
+    """
+    Build a public absolute URL for a stored asset path when possible.
+
+    Args:
+        path: Relative or absolute asset path
+
+    Returns:
+        Absolute URL when a public base is available, otherwise the original path
+    """
+    if not path:
+        return path
+
+    if path.startswith(('http://', 'https://')):
+        return path
+
+    normalized_path = path if path.startswith('/') else f'/{path}'
+
+    base_url = current_app.config.get('PUBLIC_API_BASE_URL', '').rstrip('/')
+    if not base_url and has_request_context():
+        base_url = request.host_url.rstrip('/')
+
+    if not base_url:
+        return normalized_path
+
+    return f'{base_url}{normalized_path}'
 
 
 def sanitize_input(value: str) -> str:

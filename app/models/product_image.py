@@ -5,6 +5,7 @@ Product images for marketplace products.
 """
 from datetime import datetime
 from app.database import db
+from app.utils.helpers import build_public_url
 
 
 class ProductImage(db.Model):
@@ -29,7 +30,7 @@ class ProductImage(db.Model):
         return {
             'id': self.id,
             'product_id': self.product_id,
-            'image_url': self.image_url,
+            'image_url': build_public_url(self.image_url),
             'is_primary': self.is_primary,
             'created_at': self.created_at.isoformat() if self.created_at else None
         }

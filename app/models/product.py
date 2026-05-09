@@ -5,6 +5,7 @@ Products listed by suppliers and companies.
 """
 from datetime import datetime
 from app.database import db
+from app.utils.helpers import build_public_url
 
 
 class Product(db.Model):
@@ -82,9 +83,9 @@ class Product(db.Model):
         """Get the primary image URL."""
         primary = self.images.filter_by(is_primary=True).first()
         if primary:
-            return primary.image_url
+            return build_public_url(primary.image_url)
         first_image = self.images.first()
-        return first_image.image_url if first_image else None
+        return build_public_url(first_image.image_url) if first_image else None
     
     def get_average_rating(self):
         """Calculate average rating."""

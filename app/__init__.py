@@ -4,7 +4,7 @@ TORIDA Flask Application Factory
 B2B Marketplace Backend for Egypt.
 """
 import os
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
 
 from app.config import config
@@ -29,11 +29,13 @@ def create_app(config_name=None):
     
     # Load configuration
     app.config.from_object(config[config_name])
+
+    cors_origins = app.config.get('CORS_ORIGINS') or '*'
     
     # Initialize CORS
     CORS(app, resources={
         r"/api/*": {
-            "origins": "*",
+            "origins": cors_origins,
             "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
             "allow_headers": ["Content-Type", "Authorization"]
         }
@@ -55,16 +57,20 @@ def create_app(config_name=None):
     register_security_headers(app)
     
     # Create upload folder if not exists
-    upload_folder = app.config.get('UPLOAD_FOLDER', 'uploads')
-    if not os.path.exists(upload_folder):
-        os.makedirs(upload_folder, exist_ok=True)
+    upload_folder = app.config.get('UPLOAD_FOLDER', '/tmp/uploads')
+    try:
+        if not os.path.exists(upload_folder):
+            os.makedirs(upload_folder, exist_ok=True)
+    except Exception as e:
+        app.logger.warning(f"Could not create upload folder {upload_folder}: {str(e)}")
+    
     # Root endpoint
     @app.route('/', methods=['GET'])
     def index():
         """Root endpoint."""
         return jsonify({
             'name': 'TORIDA API',
-            'message': 'Welcome to TORIDA B2B Marketplace API. Visit /api for endpoint information.',
+            'message': 'API running successfully',
             'version': '1.0.0'
         })
     
@@ -77,6 +83,12 @@ def create_app(config_name=None):
             'service': 'TORIDA API',
             'version': '1.0.0'
         })
+
+    @app.route('/uploads/<path:filename>', methods=['GET'])
+    def serve_upload(filename):
+        """Serve uploaded files."""
+        upload_root = os.path.abspath(app.config.get('UPLOAD_FOLDER', 'uploads'))
+        return send_from_directory(upload_root, filename)
     
     # API info endpoint
     @app.route('/api', methods=['GET'])
@@ -333,4 +345,3 @@ def register_security_headers(app):
         response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
         response.headers['Pragma'] = 'no-cache'
         return response
-
