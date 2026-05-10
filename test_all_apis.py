@@ -75,7 +75,7 @@ def make_request(method, url, data=None, token=None):
     req = urllib.request.Request(full_url, data=body_bytes, headers=headers, method=method)
     start = time.perf_counter()
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:
             elapsed = int((time.perf_counter() - start) * 1000)
             raw = resp.read().decode("utf-8")
             try:
