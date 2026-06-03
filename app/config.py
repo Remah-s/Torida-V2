@@ -81,6 +81,15 @@ class Config:
     MAX_CONTENT_LENGTH = int(os.getenv('MAX_CONTENT_LENGTH', 16777216))  # 16MB
     UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', '/tmp/uploads')  # Use /tmp for serverless
     ALLOWED_EXTENSIONS = os.getenv('ALLOWED_EXTENSIONS', 'png,jpg,jpeg,gif,webp').split(',')
+    
+    # Cloudinary Configuration
+    CLOUDINARY_CLOUD_NAME = os.getenv('CLOUDINARY_CLOUD_NAME', '')
+    CLOUDINARY_API_KEY = os.getenv('CLOUDINARY_API_KEY', '')
+    CLOUDINARY_API_SECRET = os.getenv('CLOUDINARY_API_SECRET', '')
+    
+    # Image Upload Settings
+    MAX_IMAGE_SIZE = int(os.getenv('MAX_IMAGE_SIZE', 10485760))  # 10MB
+    ALLOWED_IMAGE_EXTENSIONS = {'jpg', 'jpeg', 'png', 'webp'}
 
 
 class DevelopmentConfig(Config):

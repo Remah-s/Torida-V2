@@ -3,7 +3,8 @@ Product Routes
 ==============
 Routes for product management.
 """
-from flask import Blueprint, request
+from flask import Blueprint, request, current_app
+import logging
 
 from app.database import db
 from app.models import Product, ProductImage, Category, ProductSequence, User
@@ -17,6 +18,9 @@ from app.utils.validators import (
 )
 from app.utils.auth import token_required, seller_required
 from app.utils.helpers import allowed_file, upload_file
+from app.services.cloudinary_service import upload_image, delete_image
+
+logger = logging.getLogger(__name__)
 
 product_bp = Blueprint('products', __name__, url_prefix='/api/products')
 
@@ -164,12 +168,82 @@ def create_product():
         )
         
         db.session.add(product)
+        db.session.flush()  # Flush to get the product ID
+        
+        # Add image if image_url provided
+        if 'image_url' in data and data['image_url']:
+            image = ProductImage(
+                product_id=product.id,
+                image_url=data['image_url'],
+                is_primary=True
+            )
+            db.session.add(image)
+            logger.info(f"Primary image added to product {product.id}: {data['image_url']}")
+        
         db.session.commit()
         
+        logger.info(f"Product created: {product.custom_id}")
         return created_response(product.to_dict(), "Product created successfully")
     except Exception as e:
         db.session.rollback()
+        logger.error(f"Product creation failed: {str(e)}", exc_info=True)
         return error_response(f"Product creation failed: {str(e)}", 500)
+
+
+@product_bp.route('/upload-image', methods=['POST'])
+@token_required
+def upload_product_image():
+    """
+    Upload image to Cloudinary.
+    
+    Returns:
+        {
+            "success": true,
+            "image_url": "https://res.cloudinary.com/..."
+        }
+    """
+    from flask import g
+    
+    # Check if user can sell
+    user = User.query.get(g.current_user_id)
+    if not user or not user.can_sell():
+        return error_response("Only suppliers and companies can upload images", 403)
+    
+    # Check for image file
+    if 'image' not in request.files:
+        return error_response("No image file provided", 400)
+    
+    file = request.files['image']
+    
+    if file.filename == '':
+        return error_response("No image file selected", 400)
+    
+    # Get configuration
+    max_size = current_app.config.get('MAX_IMAGE_SIZE', 10485760)  # 10MB
+    allowed_extensions = current_app.config.get('ALLOWED_IMAGE_EXTENSIONS', {'jpg', 'jpeg', 'png', 'webp'})
+    
+    try:
+        # Upload to Cloudinary
+        success, image_url, error_msg = upload_image(
+            file,
+            folder='torida/products',
+            max_size=max_size,
+            allowed_extensions=allowed_extensions
+        )
+        
+        if not success:
+            logger.warning(f"Image upload failed for user {g.current_user_id}: {error_msg}")
+            return error_response(error_msg, 400)
+        
+        logger.info(f"Image uploaded successfully for user {g.current_user_id}: {image_url}")
+        
+        return success_response({
+            'image_url': image_url
+        }, "Image uploaded successfully")
+        
+    except Exception as e:
+        logger.error(f"Unexpected error uploading image: {str(e)}", exc_info=True)
+        return error_response(f"Image upload failed: {str(e)}", 500)
 
 
 @product_bp.route('/<int:product_id>', methods=['PUT'])
@@ -265,7 +339,7 @@ def get_product_images(product_id):
 @product_bp.route('/<int:product_id>/images', methods=['POST'])
 @token_required
 def add_product_image(product_id):
-    """Add image to product."""
+    """Add image to product using Cloudinary."""
     from flask import g
     product = Product.query.get(product_id)
     
@@ -285,15 +359,22 @@ def add_product_image(product_id):
     if file.filename == '':
         return error_response("No image file selected", 400)
     
-    if not allowed_file(file.filename):
-        return error_response("File type not allowed", 400)
+    # Get configuration
+    max_size = current_app.config.get('MAX_IMAGE_SIZE', 10485760)  # 10MB
+    allowed_extensions = current_app.config.get('ALLOWED_IMAGE_EXTENSIONS', {'jpg', 'jpeg', 'png', 'webp'})
     
     try:
-        # Upload file
-        success, result = upload_file(file, subfolder='products')
+        # Upload to Cloudinary
+        success, image_url, error_msg = upload_image(
+            file,
+            folder='torida/products',
+            max_size=max_size,
+            allowed_extensions=allowed_extensions
+        )
         
         if not success:
-            return error_response(result, 400)
+            logger.warning(f"Image upload failed: {error_msg}")
+            return error_response(error_msg, 400)
         
         # Create image record
         is_primary = request.form.get('is_primary', 'false').lower() == 'true'
@@ -307,23 +388,26 @@ def add_product_image(product_id):
         
         image = ProductImage(
             product_id=product_id,
-            image_url=f"/uploads/{result}",
+            image_url=image_url,
             is_primary=is_primary
         )
         
         db.session.add(image)
         db.session.commit()
         
+        logger.info(f"Product image added: product_id={product_id}, image_url={image_url}")
+        
         return created_response(image.to_dict(), "Image added successfully")
     except Exception as e:
         db.session.rollback()
+        logger.error(f"Image addition failed: {str(e)}", exc_info=True)
         return error_response(f"Image upload failed: {str(e)}", 500)
 
 
 @product_bp.route('/<int:product_id>/images/<int:image_id>', methods=['DELETE'])
 @token_required
 def delete_product_image(product_id, image_id):
-    """Delete product image."""
+    """Delete product image from Cloudinary and database."""
     from flask import g
     product = Product.query.get(product_id)
     
@@ -340,11 +424,23 @@ def delete_product_image(product_id, image_id):
         return not_found_response("Image not found")
     
     try:
+        # Delete from Cloudinary
+        image_url = image.image_url
+        success, error_msg = delete_image(image_url)
+        
+        if not success:
+            logger.warning(f"Failed to delete image from Cloudinary: {error_msg}")
+            # Continue with database deletion even if Cloudinary deletion fails
+        
+        # Delete from database
         db.session.delete(image)
         db.session.commit()
+        
+        logger.info(f"Product image deleted: product_id={product_id}, image_id={image_id}")
         return success_response(message="Image deleted successfully")
     except Exception as e:
         db.session.rollback()
+        logger.error(f"Image deletion failed: {str(e)}", exc_info=True)
         return error_response(f"Delete failed: {str(e)}", 500)
 
 

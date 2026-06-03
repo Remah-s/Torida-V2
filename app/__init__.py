@@ -4,8 +4,10 @@ TORIDA Flask Application Factory
 B2B Marketplace Backend for Egypt.
 """
 import os
+import logging
 from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
+import cloudinary
 
 from app.config import config
 from app.database import db, init_db
@@ -43,6 +45,20 @@ def create_app(config_name=None):
     
     # Initialize database
     init_db(app)
+    
+    # Initialize Cloudinary
+    cloudinary.config(
+        cloud_name=app.config.get('CLOUDINARY_CLOUD_NAME'),
+        api_key=app.config.get('CLOUDINARY_API_KEY'),
+        api_secret=app.config.get('CLOUDINARY_API_SECRET')
+    )
+    
+    # Set up logging for Cloudinary
+    logger = logging.getLogger(__name__)
+    if app.config.get('CLOUDINARY_CLOUD_NAME'):
+        logger.info("Cloudinary configured successfully")
+    else:
+        logger.warning("Cloudinary not configured - image uploads may fail")
     
     # Register blueprints
     register_blueprints(app)
