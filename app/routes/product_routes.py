@@ -497,3 +497,106 @@ def get_my_products():
     products = [product.to_dict_with_images() for product in pagination.items]
     
     return paginated_response(products, page, per_page, pagination.total)
+
+
+# ============================================
+# SUPPLIER DASHBOARD
+# ============================================
+
+@product_bp.route('/supplier/dashboard', methods=['GET'])
+@token_required
+def get_supplier_dashboard():
+    """Get supplier dashboard stats."""
+    from flask import g
+    from sqlalchemy import and_
+    
+    # Check if user can sell
+    user = User.query.get(g.current_user_id)
+    if not user or not user.can_sell():
+        return error_response("Only suppliers and companies can access this", 403)
+    
+    # Get supplier's stats
+    total_products = Product.query.filter_by(company_id=g.current_user_id).count()
+    active_products = Product.query.filter_by(
+        company_id=g.current_user_id, 
+        is_active=True
+    ).count()
+    total_images = db.session.query(func.count(ProductImage.id)).join(
+        Product, ProductImage.product_id == Product.id
+    ).filter(Product.company_id == g.current_user_id).scalar() or 0
+    
+    # Get recent products
+    recent_products = Product.query.filter_by(
+        company_id=g.current_user_id
+    ).order_by(Product.created_at.desc()).limit(10).all()
+    
+    # Get total orders
+    from app.models import OrderItem
+    total_orders = db.session.query(func.count(OrderItem.id)).join(
+        Product, OrderItem.product_id == Product.id
+    ).filter(Product.company_id == g.current_user_id).scalar() or 0
+    
+    return success_response({
+        'total_products': total_products,
+        'active_products': active_products,
+        'total_images': int(total_images),
+        'total_orders': int(total_orders),
+        'recent_products': [p.to_dict_with_images() for p in recent_products]
+    })
+
+
+@product_bp.route('/supplier/upload-image', methods=['POST'])
+@token_required
+def supplier_upload_image():
+    """
+    Supplier endpoint to upload images to Cloudinary.
+    Used in supplier dashboard for product images.
+    
+    Returns:
+        {
+            "success": true,
+            "image_url": "https://res.cloudinary.com/..."
+        }
+    """
+    from flask import g
+    
+    # Check if user can sell
+    user = User.query.get(g.current_user_id)
+    if not user or not user.can_sell():
+        return error_response("Only suppliers and companies can upload images", 403)
+    
+    # Check for image file
+    if 'image' not in request.files:
+        return error_response("No image file provided", 400)
+    
+    file = request.files['image']
+    
+    if file.filename == '':
+        return error_response("No image file selected", 400)
+    
+    # Get configuration
+    max_size = current_app.config.get('MAX_IMAGE_SIZE', 10485760)  # 10MB
+    allowed_extensions = current_app.config.get('ALLOWED_IMAGE_EXTENSIONS', {'jpg', 'jpeg', 'png', 'webp'})
+    
+    try:
+        # Upload to Cloudinary
+        success, image_url, error_msg = upload_image(
+            file,
+            folder='torida/products',
+            max_size=max_size,
+            allowed_extensions=allowed_extensions
+        )
+        
+        if not success:
+            logger.warning(f"Supplier image upload failed for user {g.current_user_id}: {error_msg}")
+            return error_response(error_msg, 400)
+        
+        logger.info(f"Supplier image uploaded successfully: {image_url}")
+        
+        return success_response({
+            'image_url': image_url
+        }, "Image uploaded successfully")
+        
+    except Exception as e:
+        logger.error(f"Unexpected error uploading supplier image: {str(e)}", exc_info=True)
+        return error_response(f"Image upload failed: {str(e)}", 500)

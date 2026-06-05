@@ -26,6 +26,8 @@ from app.models.role_permission import RolePermission
 from app.models.user_role import UserRole
 from app.models.user import User
 
+ADMIN_ROLE_NAME = 'Admin'
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -62,6 +64,53 @@ def _ensure_custom_id(role: Role) -> None:
 
     seq_row.sequence += 1
     role.custom_id = f"ROL-{str(seq_row.sequence).zfill(5)}"
+
+
+def get_role_by_name(role_name: str) -> Optional[Role]:
+    """Return a role by its name or None."""
+    return Role.query.filter_by(role_name=role_name).first()
+
+
+def _resolve_user(user_or_id) -> Optional[User]:
+    """Resolve a user instance from either a model instance or user id."""
+    if isinstance(user_or_id, User):
+        return user_or_id
+    return User.query.get(user_or_id)
+
+
+def get_effective_permissions_for_user(user_or_id) -> List[dict]:
+    """Return the distinct permissions granted to a user through all roles."""
+    user = _resolve_user(user_or_id)
+    if not user:
+        return []
+
+    permissions = (
+        db.session.query(Permission)
+        .join(RolePermission, RolePermission.permission_id == Permission.id)
+        .join(UserRole, UserRole.role_id == RolePermission.role_id)
+        .filter(UserRole.user_id == user.id)
+        .distinct()
+        .order_by(Permission.permission_name.asc())
+        .all()
+    )
+    return [permission.to_dict() for permission in permissions]
+
+
+def serialize_user_access(user: User) -> dict:
+    """Return a dashboard-friendly snapshot of a user's roles and permissions."""
+    data = user.to_dict(include_sensitive=True)
+    effective_permissions = get_effective_permissions_for_user(user)
+
+    data['is_admin'] = any(
+        role.get('role_name') == ADMIN_ROLE_NAME for role in data.get('roles', [])
+    )
+    data['effective_permissions'] = effective_permissions
+    data['effective_permission_names'] = [
+        permission['permission_name'] for permission in effective_permissions
+    ]
+    data['roles_count'] = len(data.get('roles', []))
+    data['permissions_count'] = len(effective_permissions)
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +178,8 @@ def update_role(role_id: int, data: dict) -> Tuple[Optional[Role], Optional[str]
             return None, "role_name cannot be empty"
         if len(new_name) > 100:
             return None, "role_name must be 100 characters or fewer"
+        if role.role_name == ADMIN_ROLE_NAME and new_name != ADMIN_ROLE_NAME:
+            return None, "The Admin role name is protected and cannot be changed"
 
         existing = Role.query.filter(
             Role.role_name == new_name,
@@ -154,6 +205,8 @@ def delete_role(role_id: int) -> Tuple[bool, Optional[str]]:
     role = Role.query.get(role_id)
     if not role:
         return False, "Role not found"
+    if role.role_name == ADMIN_ROLE_NAME:
+        return False, "The Admin role is protected and cannot be deleted"
 
     try:
         db.session.delete(role)
@@ -386,6 +439,58 @@ def assign_roles_bulk(
         return None, f"Bulk assignment failed: {str(exc)}"
 
 
+def replace_roles_for_user(
+    user_id: int, role_ids: List[int]
+) -> Tuple[Optional[List[dict]], Optional[str]]:
+    """
+    Replace ALL roles assigned to a user with the provided set.
+
+    The last Admin user cannot be stripped of the Admin role.
+    """
+    user = User.query.get(user_id)
+    if not user:
+        return None, "User not found"
+
+    normalized_role_ids = []
+    seen_role_ids = set()
+    for role_id in role_ids:
+        try:
+            normalized_role_id = int(role_id)
+        except (TypeError, ValueError):
+            return None, f"role_id '{role_id}' must be an integer"
+
+        if normalized_role_id in seen_role_ids:
+            continue
+
+        seen_role_ids.add(normalized_role_id)
+        normalized_role_ids.append(normalized_role_id)
+
+    validated_roles = []
+    for role_id in normalized_role_ids:
+        role = Role.query.get(role_id)
+        if not role:
+            return None, f"Role id {role_id} not found"
+        validated_roles.append(role)
+
+    admin_role = get_role_by_name(ADMIN_ROLE_NAME)
+    if admin_role and user.has_role(ADMIN_ROLE_NAME) and admin_role.id not in normalized_role_ids:
+        admin_count = UserRole.query.filter_by(role_id=admin_role.id).count()
+        if admin_count <= 1:
+            return None, "Cannot remove the last admin user"
+
+    try:
+        UserRole.query.filter_by(user_id=user_id).delete()
+
+        for role in validated_roles:
+            db.session.add(UserRole(user_id=user_id, role_id=role.id))
+
+        db.session.commit()
+        return [role.to_dict() for role in validated_roles], None
+    except Exception as exc:
+        db.session.rollback()
+        return None, f"Role replacement failed: {str(exc)}"
+
+
 def remove_role_from_user(
     user_id: int, role_id: int
 ) -> Tuple[bool, Optional[str]]:
@@ -393,6 +498,12 @@ def remove_role_from_user(
     ur = UserRole.query.filter_by(user_id=user_id, role_id=role_id).first()
     if not ur:
         return False, "Role assignment not found"
+
+    role = Role.query.get(role_id)
+    if role and role.role_name == ADMIN_ROLE_NAME:
+        admin_count = UserRole.query.filter_by(role_id=role_id).count()
+        if admin_count <= 1:
+            return False, "Cannot remove the last admin user"
 
     try:
         db.session.delete(ur)

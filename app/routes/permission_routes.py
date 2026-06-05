@@ -19,7 +19,7 @@ from app.utils.response import (
     not_found_response, paginated_response, validation_error_response
 )
 from app.utils.validators import validate_required_fields, validate_pagination
-from app.utils.auth import token_required
+from app.utils.auth import token_required, admin_required
 
 from app.services.role_service import (
     get_all_permissions,
@@ -58,7 +58,7 @@ def get_permission(permission_id):
 
 
 @permission_bp.route('', methods=['POST'])
-@token_required
+@admin_required
 def create_permission():
     """
     Create a new permission.
@@ -81,7 +81,7 @@ def create_permission():
 
 
 @permission_bp.route('/bulk', methods=['POST'])
-@token_required
+@admin_required
 def bulk_create_permissions():
     """
     Create multiple permissions in a single request.
@@ -107,7 +107,7 @@ def bulk_create_permissions():
 
 
 @permission_bp.route('/<int:permission_id>', methods=['PUT'])
-@token_required
+@admin_required
 def update_permission(permission_id):
     """Update permission."""
     data = request.get_json()
@@ -123,7 +123,7 @@ def update_permission(permission_id):
 
 
 @permission_bp.route('/<int:permission_id>', methods=['DELETE'])
-@token_required
+@admin_required
 def delete_permission(permission_id):
     """Delete permission (cascades to role_permissions)."""
     ok, err = svc_delete_permission(permission_id)

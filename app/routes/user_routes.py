@@ -195,7 +195,7 @@ def get_user_roles(user_id):
 
 
 @user_bp.route('/<int:user_id>/roles', methods=['POST'])
-@token_required
+@admin_required
 def assign_role(user_id):
     """Assign role to user."""
     from app.services.role_service import assign_role_to_user
@@ -218,7 +218,7 @@ def assign_role(user_id):
 
 
 @user_bp.route('/<int:user_id>/roles/<int:role_id>', methods=['DELETE'])
-@token_required
+@admin_required
 def remove_role(user_id, role_id):
     """Remove role from user."""
     from app.services.role_service import remove_role_from_user

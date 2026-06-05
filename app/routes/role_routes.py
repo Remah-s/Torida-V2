@@ -87,7 +87,7 @@ def get_role(role_id):
 
 
 @role_bp.route('', methods=['POST'])
-@token_required
+@admin_required
 def create_role():
     """
     Create a new role.
@@ -113,7 +113,7 @@ def create_role():
 
 
 @role_bp.route('/<int:role_id>', methods=['PUT'])
-@token_required
+@admin_required
 def update_role(role_id):
     """Update role."""
     data = request.get_json()
@@ -129,7 +129,7 @@ def update_role(role_id):
 
 
 @role_bp.route('/<int:role_id>', methods=['DELETE'])
-@token_required
+@admin_required
 def delete_role(role_id):
     """Delete role (cascades to role_permissions and user_roles)."""
     ok, err = svc_delete_role(role_id)
@@ -155,7 +155,7 @@ def get_role_permissions(role_id):
 
 
 @role_bp.route('/<int:role_id>/permissions', methods=['POST'])
-@token_required
+@admin_required
 def assign_permission(role_id):
     """
     Assign a single permission to a role.
@@ -180,7 +180,7 @@ def assign_permission(role_id):
 
 
 @role_bp.route('/<int:role_id>/permissions/bulk', methods=['POST'])
-@token_required
+@admin_required
 def bulk_assign_permissions(role_id):
     """
     Assign multiple permissions to a role in one request.
@@ -207,7 +207,7 @@ def bulk_assign_permissions(role_id):
 
 
 @role_bp.route('/<int:role_id>/permissions', methods=['PUT'])
-@token_required
+@admin_required
 def set_role_permissions(role_id):
     """
     Replace ALL permissions for a role with the provided set.
@@ -229,7 +229,7 @@ def set_role_permissions(role_id):
 
 
 @role_bp.route('/<int:role_id>/permissions/<int:permission_id>', methods=['DELETE'])
-@token_required
+@admin_required
 def remove_permission(role_id, permission_id):
     """Remove a single permission from a role."""
     ok, err = remove_permission_from_role(role_id, permission_id)
@@ -255,7 +255,7 @@ def list_user_roles(user_id):
 
 
 @role_bp.route('/users/<int:user_id>', methods=['POST'])
-@token_required
+@admin_required
 def assign_user_role(user_id):
     """
     Assign a single role to a user.
@@ -280,7 +280,7 @@ def assign_user_role(user_id):
 
 
 @role_bp.route('/users/<int:user_id>/bulk', methods=['POST'])
-@token_required
+@admin_required
 def bulk_assign_user_roles(user_id):
     """
     Assign multiple roles to a user.
@@ -307,7 +307,7 @@ def bulk_assign_user_roles(user_id):
 
 
 @role_bp.route('/users/<int:user_id>/<int:role_id>', methods=['DELETE'])
-@token_required
+@admin_required
 def remove_user_role(user_id, role_id):
     """Remove a role from a user."""
     ok, err = remove_role_from_user(user_id, role_id)

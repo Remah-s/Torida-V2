@@ -3,7 +3,8 @@ Admin Routes
 ============
 Routes for admin control panel - full access to all entities.
 """
-from flask import Blueprint, request, g
+import logging
+from flask import Blueprint, request, g, current_app
 from datetime import datetime, timedelta
 from sqlalchemy import func, desc
 
@@ -20,8 +21,65 @@ from app.utils.response import (
 )
 from app.utils.validators import validate_pagination
 from app.utils.auth import admin_required
+from app.services.cloudinary_service import upload_image, delete_image
+from app.services.role_service import (
+    ADMIN_ROLE_NAME,
+    assign_role_to_user,
+    create_role as svc_create_role,
+    delete_role as svc_delete_role,
+    get_role_by_name,
+    remove_role_from_user,
+    replace_permissions_for_role,
+    replace_roles_for_user,
+    serialize_user_access,
+    update_role as svc_update_role,
+)
+
+logger = logging.getLogger(__name__)
 
 admin_bp = Blueprint('admin', __name__, url_prefix='/api/admin')
+
+
+def _serialize_role_for_admin(role):
+    """Return role data with dashboard-oriented metadata."""
+    data = role.to_dict_with_permissions()
+    data['permissions_count'] = role.role_permissions.count()
+    data['users_count'] = role.user_roles.count()
+    data['is_system_role'] = role.role_name == ADMIN_ROLE_NAME
+    return data
+
+
+def _serialize_permission_for_admin(permission):
+    """Return permission data with resource/action metadata."""
+    resource, action = (permission.permission_name.split(':', 1) + [None])[:2]
+    data = permission.to_dict()
+    data['resource'] = resource
+    data['action'] = action
+    data['roles_count'] = permission.role_permissions.count()
+    return data
+
+
+def _parse_integer_list(raw_values, field_name):
+    """Validate and normalize a list of integer ids."""
+    if not isinstance(raw_values, list):
+        return None, error_response(f"{field_name} must be an array", 400)
+
+    normalized_values = []
+    seen_values = set()
+
+    for raw_value in raw_values:
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            return None, error_response(f"{field_name} must contain only integers", 400)
+
+        if value in seen_values:
+            continue
+
+        seen_values.add(value)
+        normalized_values.append(value)
+
+    return normalized_values, None
 
 
 # ============================================
@@ -68,6 +126,30 @@ def get_dashboard():
         Order.status, func.count(Order.id)
     ).group_by(Order.status).all()
 
+    admin_role = get_role_by_name(ADMIN_ROLE_NAME)
+    total_admin_users = (
+        UserRole.query.filter_by(role_id=admin_role.id).count() if admin_role else 0
+    )
+    users_with_roles = (
+        db.session.query(func.count(func.distinct(UserRole.user_id))).scalar() or 0
+    )
+    role_breakdown = (
+        db.session.query(Role.role_name, func.count(UserRole.user_id))
+        .outerjoin(UserRole, UserRole.role_id == Role.id)
+        .group_by(Role.id, Role.role_name)
+        .order_by(desc(func.count(UserRole.user_id)), Role.role_name.asc())
+        .all()
+    )
+    recent_admins = []
+    if admin_role:
+        recent_admins = (
+            User.query
+            .filter(User.user_roles.any(UserRole.role_id == admin_role.id))
+            .order_by(desc(User.created_at))
+            .limit(5)
+            .all()
+        )
+
     return success_response({
         'total_users': total_users,
         'active_users': active_users,
@@ -82,6 +164,17 @@ def get_dashboard():
         'recent_users': [u.to_dict() for u in recent_users],
         'user_type_breakdown': [{'type': t, 'count': c} for t, c in user_types],
         'order_status_breakdown': [{'status': s, 'count': c} for s, c in order_statuses],
+        'access_control': {
+            'total_roles': Role.query.count(),
+            'total_permissions': Permission.query.count(),
+            'total_admin_users': total_admin_users,
+            'users_with_roles': int(users_with_roles),
+            'role_breakdown': [
+                {'role_name': role_name, 'users_count': users_count}
+                for role_name, users_count in role_breakdown
+            ],
+            'recent_admins': [serialize_user_access(user) for user in recent_admins],
+        },
     })
 
 
@@ -138,6 +231,59 @@ def get_analytics():
 
 
 # ============================================
+# IMAGE UPLOAD FOR ADMIN DASHBOARD
+# ============================================
+
+@admin_bp.route('/upload-image', methods=['POST'])
+@admin_required
+def admin_upload_image():
+    """
+    Admin endpoint to upload images (category icons, banners, etc.) to Cloudinary.
+    
+    Returns:
+        {
+            "success": true,
+            "image_url": "https://res.cloudinary.com/..."
+        }
+    """
+    # Check for image file
+    if 'image' not in request.files:
+        return error_response("No image file provided", 400)
+    
+    file = request.files['image']
+    
+    if file.filename == '':
+        return error_response("No image file selected", 400)
+    
+    # Get configuration
+    max_size = current_app.config.get('MAX_IMAGE_SIZE', 10485760)  # 10MB
+    allowed_extensions = current_app.config.get('ALLOWED_IMAGE_EXTENSIONS', {'jpg', 'jpeg', 'png', 'webp'})
+    
+    try:
+        # Upload to Cloudinary - admin folder for various assets
+        success, image_url, error_msg = upload_image(
+            file,
+            folder='torida/admin',
+            max_size=max_size,
+            allowed_extensions=allowed_extensions
+        )
+        
+        if not success:
+            logger.warning(f"Admin image upload failed: {error_msg}")
+            return error_response(error_msg, 400)
+        
+        logger.info(f"Admin image uploaded successfully: {image_url}")
+        
+        return success_response({
+            'image_url': image_url
+        }, "Image uploaded successfully")
+        
+    except Exception as e:
+        logger.error(f"Unexpected error uploading admin image: {str(e)}", exc_info=True)
+        return error_response(f"Image upload failed: {str(e)}", 500)
+
+
+# ============================================
 # USER MANAGEMENT
 # ============================================
 
@@ -151,7 +297,9 @@ def get_users():
 
     type_id = request.args.get('type_id', type=int)
     gov_id = request.args.get('gov_id', type=int)
+    role_id = request.args.get('role_id', type=int)
     is_active = request.args.get('is_active', type=str)
+    is_admin = request.args.get('is_admin', type=str)
     search = request.args.get('search', type=str)
 
     query = User.query
@@ -159,8 +307,19 @@ def get_users():
         query = query.filter_by(type_id=type_id)
     if gov_id:
         query = query.filter_by(gov_id=gov_id)
+    if role_id:
+        query = query.filter(User.user_roles.any(UserRole.role_id == role_id))
     if is_active is not None and is_active != '':
         query = query.filter_by(is_active=is_active.lower() == 'true')
+    if is_admin is not None and is_admin != '':
+        admin_role = get_role_by_name(ADMIN_ROLE_NAME)
+        if is_admin.lower() == 'true':
+            if admin_role:
+                query = query.filter(User.user_roles.any(UserRole.role_id == admin_role.id))
+            else:
+                query = query.filter(User.id == -1)
+        elif admin_role:
+            query = query.filter(~User.user_roles.any(UserRole.role_id == admin_role.id))
     if search:
         sf = f"%{search}%"
         query = query.filter(db.or_(
@@ -169,7 +328,7 @@ def get_users():
 
     query = query.order_by(User.created_at.desc())
     pagination = query.paginate(page=page, per_page=per_page, error_out=False)
-    users = [u.to_dict(include_sensitive=True) for u in pagination.items]
+    users = [serialize_user_access(user) for user in pagination.items]
     return paginated_response(users, page, per_page, pagination.total)
 
 
@@ -181,11 +340,31 @@ def get_user(user_id):
     if not user:
         return not_found_response("User not found")
 
-    data = user.to_dict(include_sensitive=True)
+    data = serialize_user_access(user)
     data['orders_count'] = user.buyer_orders.count() + user.seller_orders.count()
     data['products_count'] = user.products.count()
     data['reviews_count'] = user.reviews.count()
     return success_response(data)
+
+
+@admin_bp.route('/users/<int:user_id>/access', methods=['GET'])
+@admin_required
+def get_user_access(user_id):
+    """Get a dashboard-ready access-control snapshot for one user."""
+    user = User.query.get(user_id)
+    if not user:
+        return not_found_response("User not found")
+
+    roles = Role.query.order_by(Role.role_name.asc()).all()
+    permissions = Permission.query.order_by(Permission.permission_name.asc()).all()
+
+    return success_response({
+        'user': serialize_user_access(user),
+        'available_roles': [_serialize_role_for_admin(role) for role in roles],
+        'available_permissions': [
+            _serialize_permission_for_admin(permission) for permission in permissions
+        ],
+    })
 
 
 @admin_bp.route('/users/<int:user_id>', methods=['PUT'])
@@ -267,42 +446,108 @@ def admin_assign_role(user_id):
     if not data or not data.get('role_id'):
         return error_response("Role ID required", 400)
 
+    try:
+        role_id = int(data['role_id'])
+    except (TypeError, ValueError):
+        return error_response("role_id must be an integer", 400)
+
+    ok, err = assign_role_to_user(user_id, role_id)
+    if not ok:
+        status = 404 if "not found" in err.lower() else 400
+        return error_response(err, status)
+
+    user = User.query.get(user_id)
+    return success_response(
+        {
+            'user': serialize_user_access(user),
+            'assigned_role': Role.query.get(role_id).to_dict(),
+        },
+        "Role assigned successfully"
+    )
+
+
+@admin_bp.route('/users/<int:user_id>/roles', methods=['PUT'])
+@admin_required
+def admin_replace_roles(user_id):
+    """Replace all roles for a user in a single dashboard action."""
+    data = request.get_json()
+    if not data or 'role_ids' not in data:
+        return error_response("role_ids is required", 400)
+
+    role_ids, validation_error = _parse_integer_list(data['role_ids'], 'role_ids')
+    if validation_error:
+        return validation_error
+
+    admin_role = get_role_by_name(ADMIN_ROLE_NAME)
+    if admin_role and g.current_user_id == user_id and admin_role.id not in role_ids:
+        return error_response(
+            "You cannot remove your own Admin role from the admin dashboard",
+            400
+        )
+
+    roles, err = replace_roles_for_user(user_id, role_ids)
+    if err:
+        status = 404 if "not found" in err.lower() else 400
+        return error_response(err, status)
+
+    user = User.query.get(user_id)
+    return success_response(
+        {
+            'user': serialize_user_access(user),
+            'roles': roles,
+        },
+        "User roles updated successfully"
+    )
+
+
+@admin_bp.route('/users/<int:user_id>/make-admin', methods=['POST'])
+@admin_required
+def admin_make_user_admin(user_id):
+    """Promote a user by assigning the Admin role."""
     user = User.query.get(user_id)
     if not user:
         return not_found_response("User not found")
 
-    role = Role.query.get(data['role_id'])
-    if not role:
-        return not_found_response("Role not found")
+    admin_role = get_role_by_name(ADMIN_ROLE_NAME)
+    if not admin_role:
+        return error_response("Admin role is not configured", 500)
 
-    existing = UserRole.query.filter_by(user_id=user_id, role_id=data['role_id']).first()
-    if existing:
-        return error_response("Role already assigned", 400)
+    ok, err = assign_role_to_user(user_id, admin_role.id)
+    if not ok and "already assigned" not in err.lower():
+        status = 404 if "not found" in err.lower() else 400
+        return error_response(err, status)
 
-    try:
-        ur = UserRole(user_id=user_id, role_id=data['role_id'])
-        db.session.add(ur)
-        db.session.commit()
-        return success_response(message="Role assigned")
-    except Exception as e:
-        db.session.rollback()
-        return error_response(str(e), 500)
+    user = User.query.get(user_id)
+    return success_response(
+        {
+            'user': serialize_user_access(user),
+            'admin_role': admin_role.to_dict(),
+        },
+        "User is now an admin"
+    )
 
 
 @admin_bp.route('/users/<int:user_id>/roles/<int:role_id>', methods=['DELETE'])
 @admin_required
 def admin_remove_role(user_id, role_id):
     """Remove role from user."""
-    ur = UserRole.query.filter_by(user_id=user_id, role_id=role_id).first()
-    if not ur:
-        return not_found_response("Role assignment not found")
-    try:
-        db.session.delete(ur)
-        db.session.commit()
-        return success_response(message="Role removed")
-    except Exception as e:
-        db.session.rollback()
-        return error_response(str(e), 500)
+    role = Role.query.get(role_id)
+    if role and role.role_name == ADMIN_ROLE_NAME and g.current_user_id == user_id:
+        return error_response(
+            "You cannot remove your own Admin role from the admin dashboard",
+            400
+        )
+
+    ok, err = remove_role_from_user(user_id, role_id)
+    if not ok:
+        status = 404 if "not found" in err.lower() else 400
+        return error_response(err, status)
+
+    user = User.query.get(user_id)
+    return success_response(
+        {'user': serialize_user_access(user)},
+        "Role removed successfully"
+    )
 
 
 # ============================================
@@ -683,16 +928,130 @@ def delete_review(review_id):
 @admin_required
 def get_roles():
     """Get all roles with permissions."""
-    roles = Role.query.all()
-    return success_response([r.to_dict_with_permissions() for r in roles])
+    roles = Role.query.order_by(Role.role_name.asc()).all()
+    return success_response([_serialize_role_for_admin(role) for role in roles])
+
+
+@admin_bp.route('/roles', methods=['POST'])
+@admin_required
+def create_role():
+    """Create a role and optionally assign permissions in one request."""
+    data = request.get_json()
+    if not data or not data.get('role_name'):
+        return error_response("role_name is required", 400)
+
+    permission_ids = []
+    if 'permission_ids' in data:
+        permission_ids, validation_error = _parse_integer_list(
+            data['permission_ids'], 'permission_ids'
+        )
+        if validation_error:
+            return validation_error
+
+    role, err = svc_create_role(data['role_name'])
+    if err:
+        return error_response(err, 400)
+
+    if permission_ids:
+        permissions, err = replace_permissions_for_role(role.id, permission_ids)
+        if err:
+            svc_delete_role(role.id)
+            status = 404 if "not found" in err.lower() else 400
+            return error_response(err, status)
+
+    role = Role.query.get(role.id)
+    return created_response(_serialize_role_for_admin(role), "Role created successfully")
+
+
+@admin_bp.route('/roles/<int:role_id>', methods=['PUT'])
+@admin_required
+def update_role(role_id):
+    """Update a role name and optionally replace its permissions."""
+    data = request.get_json()
+    if not data:
+        return error_response("No data provided", 400)
+
+    permission_ids = None
+    if 'permission_ids' in data:
+        permission_ids, validation_error = _parse_integer_list(
+            data['permission_ids'], 'permission_ids'
+        )
+        if validation_error:
+            return validation_error
+
+    role_payload = {}
+    if 'role_name' in data:
+        role_payload['role_name'] = data['role_name']
+
+    if role_payload:
+        role, err = svc_update_role(role_id, role_payload)
+        if err:
+            status = 404 if "not found" in err.lower() else 400
+            return error_response(err, status)
+    else:
+        role = Role.query.get(role_id)
+        if not role:
+            return not_found_response("Role not found")
+
+    if permission_ids is not None:
+        permissions, err = replace_permissions_for_role(role_id, permission_ids)
+        if err:
+            status = 404 if "not found" in err.lower() else 400
+            return error_response(err, status)
+
+    role = Role.query.get(role_id)
+    return success_response(_serialize_role_for_admin(role), "Role updated successfully")
+
+
+@admin_bp.route('/roles/<int:role_id>', methods=['DELETE'])
+@admin_required
+def delete_role(role_id):
+    """Delete a non-protected role from the admin dashboard."""
+    ok, err = svc_delete_role(role_id)
+    if not ok:
+        status = 404 if "not found" in err.lower() else 400
+        return error_response(err, status)
+
+    return success_response(message="Role deleted successfully")
+
+
+@admin_bp.route('/roles/<int:role_id>/permissions', methods=['PUT'])
+@admin_required
+def update_role_permissions(role_id):
+    """Replace all permissions for a role."""
+    data = request.get_json()
+    if not data or 'permission_ids' not in data:
+        return error_response("permission_ids is required", 400)
+
+    permission_ids, validation_error = _parse_integer_list(
+        data['permission_ids'], 'permission_ids'
+    )
+    if validation_error:
+        return validation_error
+
+    permissions, err = replace_permissions_for_role(role_id, permission_ids)
+    if err:
+        status = 404 if "not found" in err.lower() else 400
+        return error_response(err, status)
+
+    role = Role.query.get(role_id)
+    return success_response(
+        {
+            'role': _serialize_role_for_admin(role),
+            'permissions': permissions,
+        },
+        "Role permissions updated successfully"
+    )
 
 
 @admin_bp.route('/permissions', methods=['GET'])
 @admin_required
 def get_permissions():
     """Get all permissions."""
-    perms = Permission.query.all()
-    return success_response([p.to_dict() for p in perms])
+    perms = Permission.query.order_by(Permission.permission_name.asc()).all()
+    return success_response([
+        _serialize_permission_for_admin(permission) for permission in perms
+    ])
 
 
 @admin_bp.route('/user-types', methods=['GET'])
