@@ -3,7 +3,9 @@ Business Profile Routes
 =======================
 Routes for business profile management.
 """
-from flask import Blueprint, request
+import logging
+
+from flask import Blueprint, request, current_app, g
 
 from app.database import db
 from app.models import BusinessProfile, User
@@ -13,8 +15,19 @@ from app.utils.response import (
 )
 from app.utils.validators import validate_required_fields, validate_pagination
 from app.utils.auth import token_required
+from app.services.cloudinary_service import upload_image
 
 business_profile_bp = Blueprint('business_profiles', __name__, url_prefix='/api/business-profiles')
+logger = logging.getLogger(__name__)
+
+
+PROFILE_PHOTO_FIELDS = {
+    'logo': 'logo_url',
+    'business_logo': 'logo_url',
+    'profile': 'logo_url',
+    'cover': 'cover_image_url',
+    'cover_image': 'cover_image_url',
+}
 
 
 @business_profile_bp.route('', methods=['GET'])
@@ -90,7 +103,9 @@ def create_business_profile():
             business_name=data['business_name'],
             tax_number=data.get('tax_number'),
             commercial_register=data.get('commercial_register'),
-            address=data['address']
+            address=data['address'],
+            logo_url=data.get('logo_url'),
+            cover_image_url=data.get('cover_image_url')
         )
         db.session.add(profile)
         db.session.commit()
@@ -145,6 +160,12 @@ def update_business_profile(user_id):
         if existing:
             return error_response("Commercial register already in use", 400)
         profile.commercial_register = data['commercial_register']
+
+    if 'logo_url' in data:
+        profile.logo_url = data['logo_url']
+
+    if 'cover_image_url' in data:
+        profile.cover_image_url = data['cover_image_url']
     
     try:
         db.session.commit()
@@ -152,6 +173,77 @@ def update_business_profile(user_id):
     except Exception as e:
         db.session.rollback()
         return error_response(f"Update failed: {str(e)}", 500)
+
+
+@business_profile_bp.route('/me/upload-photo', methods=['POST'])
+@token_required
+def upload_my_business_profile_photo():
+    """
+    Upload a supplier/company profile photo from local multipart form data.
+
+    Form fields:
+      image: local image file
+      photo_type: logo, cover, profile, business_logo, or cover_image
+    """
+    user = User.query.get(g.current_user_id)
+    if not user or not user.can_sell():
+        return error_response("Only suppliers and companies can upload profile photos", 403)
+
+    profile = BusinessProfile.query.get(g.current_user_id)
+    if not profile:
+        return not_found_response("Business profile not found. Create profile before uploading photos")
+
+    if 'image' not in request.files:
+        return error_response("No image file provided", 400)
+
+    file = request.files['image']
+    if file.filename == '':
+        return error_response("No image file selected", 400)
+
+    photo_type = request.form.get('photo_type', 'logo').strip().lower()
+    profile_field = PROFILE_PHOTO_FIELDS.get(photo_type)
+    if not profile_field:
+        return error_response("photo_type must be one of: logo, cover, profile, business_logo, cover_image", 400)
+
+    max_size = current_app.config.get('MAX_IMAGE_SIZE', 10485760)
+    allowed_extensions = current_app.config.get(
+        'ALLOWED_IMAGE_EXTENSIONS',
+        {'jpg', 'jpeg', 'png', 'webp'}
+    )
+
+    try:
+        success, image_url, error_msg = upload_image(
+            file,
+            folder=f'torida/business-profiles/{g.current_user_id}',
+            max_size=max_size,
+            allowed_extensions=allowed_extensions
+        )
+
+        if not success:
+            logger.warning(
+                "Business profile photo upload failed for user %s: %s",
+                g.current_user_id,
+                error_msg
+            )
+            return error_response(error_msg, 400)
+
+        setattr(profile, profile_field, image_url)
+        db.session.commit()
+
+        return success_response({
+            'image_url': image_url,
+            'photo_type': photo_type,
+            'profile_field': profile_field,
+            'profile': profile.to_dict()
+        }, "Profile photo uploaded successfully")
+    except Exception as e:
+        db.session.rollback()
+        logger.error(
+            "Unexpected error uploading business profile photo: %s",
+            str(e),
+            exc_info=True
+        )
+        return error_response(f"Profile photo upload failed: {str(e)}", 500)
 
 
 @business_profile_bp.route('/<int:user_id>', methods=['DELETE'])
